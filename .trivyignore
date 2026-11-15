@@ -1,0 +1,3 @@
+# Vulnerabilities accepted for the hardened image.
+# One ID per line, each with a comment giving the reason and a review date, e.g.:
+#   CVE-2026-00000  # no upstream fix; not reachable (feature X disabled). Review 2026-12-31
