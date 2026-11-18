@@ -71,4 +71,11 @@ echo "smoke: kepubify conversion OK"
 echo "smoke: ffprobe"
 $docker exec "$name-app" ffprobe -version | sed -n 1p   # not head: SIGPIPE under pipefail
 
+# The image's HEALTHCHECK must exist and pass. (podman keeps it only in Docker-format images:
+# build with `--format docker`; CI pushes Docker v2 manifests for the same reason.)
+hc="$($docker image inspect --format '{{json .Config.Healthcheck}}' "$image" \
+  | jq -r '.Test // empty | if .[0] == "CMD-SHELL" then ["sh", "-c", .[1]] else .[1:] end | @sh')"
+[ -n "$hc" ] || { echo "smoke: FAIL the image has no health check"; exit 1; }
+eval "$docker exec \"$name-app\" $hc" >/dev/null || { echo "smoke: FAIL the image's health check fails"; exit 1; }
+echo "smoke: image health check passes"
 echo "smoke: PASS"
