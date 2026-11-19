@@ -13,6 +13,18 @@ No fork: each build clones upstream at the tag in `UPSTREAM_VERSION` and applies
 | `kepubify` | prebuilt v4.0.4 binary from 2022 (go1.17.8, old `x/text`) | same v4.0.4 source, built with current Go and latest `golang.org/x/{text,sync}` |
 | Java deps | whatever the release locked | security floors from `overlay/security-overrides.init.gradle.kts` (Tomcat, Jackson 2/3, MariaDB Connector/J, org.json); only ever raise versions, only within the same major.minor |
 | Alpine packages | frozen at release time | `apk upgrade` at build time, rebuilt weekly |
+| App layout | Spring Boot fat jar (`java -jar /app/app.jar`, classes read through `NestedJarFile`) | unpacked with `jarmode=tools extract`: thin `/app/app.jar` + `/app/lib/*.jar`, same `CMD` |
+| Virtual-thread carriers | one per CPU | `-Djdk.virtualThreadScheduler.parallelism=16` |
+
+### Why the jar is unpacked
+
+Upstream runs Tomcat and the scheduler on virtual threads. With the fat jar, the app can deadlock for good. A
+request thread reading a static file holds the jar's `NestedJarFile` monitor and is unmounted. Then every carrier
+thread gets pinned in class loading, which can't release its carrier, waiting for that same monitor. Nothing runs
+again: no requests, no scheduled tasks, no new DB connections, and nothing in the log. This was seen on 2026-11-13 and
+2026-11-19 (thread dumps showed all four carriers waiting on `UrlNestedJarFile` and the class-loader lock). The
+extracted layout is loaded by the JDK's own class loader, so that monitor no longer exists. More carriers is only
+a backstop. If it ever hangs anyway, `SPRING_THREADS_VIRTUAL_ENABLED=false` turns virtual threads off.
 
 `scripts/harden-dockerfile.py` makes these edits to upstream's `Dockerfile`. Every edit must match its anchor exactly
 once. If upstream restructures the Dockerfile, the build fails rather than shipping an unhardened image.
@@ -29,7 +41,7 @@ kepubify stays on v4 because v5 changes koboSpan numbering, which can shift Kobo
 
 - `build.yml`: runs on push/PR, manually, and weekly (Mon 05:17 UTC). It runs prepare, then build, then the Trivy
   gate (fixable CRITICAL/HIGH fail the build; exceptions go in `.trivyignore` with a reason and review date), then
-  the smoke test (MariaDB 11.8, healthcheck, kepubify conversion, ffprobe), then pushes (on main only). The Trivy
+  the smoke test (MariaDB 11.8, healthcheck, unpacked layout, web UI, kepubify conversion, ffprobe), then pushes (on main only). The Trivy
   JSON/table output is kept as a build artifact. If the `HC_PING_URL` secret is set, a successful run pings it.
 - `watch-upstream.yml`: runs daily. When grimmory publishes a new release, it opens a PR that bumps
   `UPSTREAM_VERSION` and dispatches the build on that branch. Merge it when it is green.

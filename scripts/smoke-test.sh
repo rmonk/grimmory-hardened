@@ -51,6 +51,29 @@ until $docker exec "$name-app" wget -q -O - http://localhost:6060/api/v1/healthc
 done
 echo "smoke: healthcheck OK after ${SECONDS}s"
 
+echo "smoke: unpacked layout"
+# The image must run the thin jar extracted by `jarmode=tools extract`, not the Spring Boot
+# fat jar (NestedJarFile + virtual threads deadlocks; see scripts/harden-dockerfile.py).
+$docker exec "$name-app" sh -eu -c '
+  ls /app/lib/*.jar >/dev/null
+  mf=$(unzip -p /app/app.jar META-INF/MANIFEST.MF)
+  echo "$mf" | grep -q "^Class-Path: "
+  ! echo "$mf" | grep -q JarLauncher
+  ! unzip -l /app/app.jar | grep -q "BOOT-INF/lib/"
+  tr "\0" " " < /proc/1/cmdline | grep -q -- "-jar /app/app.jar"
+'
+echo "smoke: unpacked layout OK"
+
+echo "smoke: web UI"
+# Static files now come out of the thin jar through the JDK's own jar code.
+index="$($docker exec "$name-app" wget -q -O - http://localhost:6060/)"
+echo "$index" | grep -qi '<app-root\|<!doctype html' || { echo "smoke: FAIL / is not the web UI"; exit 1; }
+asset="$(echo "$index" | grep -oE '(src|href)="[^"]+\.(js|css)"' | head -n 1 | sed -E 's/^[a-z]+="//; s/"$//')"
+[ -n "$asset" ] || { echo "smoke: FAIL no js/css asset referenced in /"; exit 1; }
+$docker exec "$name-app" wget -q -O /dev/null "http://localhost:6060/${asset#/}" \
+  || { echo "smoke: FAIL asset $asset"; exit 1; }
+echo "smoke: web UI OK ($asset)"
+
 echo "smoke: kepubify"
 $docker exec "$name-app" kepubify --version
 # Minimal EPUB 3, built on the host (the JRE image has no zip tool), converted inside the container.
